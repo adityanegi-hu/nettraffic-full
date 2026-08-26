@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Traffic Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="panel">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2 11 H6 L8 4 L12 18 L14 11 H20" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <h1>Network Traffic Monitor</h1>
+        <p class="subtitle">Live interface telemetry &middot; <span id="hostLabel">live counters</span></p>
+      </div>
+    </div>
+    <div class="status-cluster">
+      <div class="status-pill" id="statusPill">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">CONNECTING</span>
+      </div>
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <section class="readout-row" aria-label="Current throughput">
+    <div class="readout" data-dir="rx">
+      <span class="readout-label">RX &middot; inbound</span>
+      <span class="readout-value"><span id="rxValue">0.0</span><span class="readout-unit" id="rxUnit">B/s</span></span>
+      <span class="readout-sub"><span id="rxPkt">0</span> pkt/s</span>
+    </div>
+    <div class="readout-divider" aria-hidden="true"></div>
+    <div class="readout" data-dir="tx">
+      <span class="readout-label">TX &middot; outbound</span>
+      <span class="readout-value"><span id="txValue">0.0</span><span class="readout-unit" id="txUnit">B/s</span></span>
+      <span class="readout-sub"><span id="txPkt">0</span> pkt/s</span>
+    </div>
+    <div class="readout-divider" aria-hidden="true"></div>
+    <div class="readout readout-compact">
+      <span class="readout-label">Session total</span>
+      <span class="readout-value readout-value-sm"><span id="totalValue">0.0</span><span class="readout-unit" id="totalUnit">B</span></span>
+      <span class="readout-sub">RX + TX since page load</span>
+    </div>
+  </section>
+
+  <section class="scope-section" aria-label="Live waveform">
+    <div class="scope-head">
+      <h2>Signal trace</h2>
+      <div class="legend">
+        <span class="legend-item"><i class="swatch rx"></i>RX</span>
+        <span class="legend-item"><i class="swatch tx"></i>TX</span>
+        <span class="legend-item scope-window">last 120s</span>
+      </div>
+    </div>
+    <canvas id="scope" class="scope-canvas" aria-hidden="true"></canvas>
+    <div id="unsupportedNote" class="unsupported-note" hidden>
+      Live throughput isn't available on this host. Showing interface names only.
+    </div>
+  </section>
+
+  <section class="table-section" aria-label="Interfaces">
+    <div class="scope-head">
+      <h2>Interfaces</h2>
+      <span class="legend-item scope-window" id="ifaceCount">0 interfaces</span>
+    </div>
+    <div class="table-wrap">
+      <table id="ifaceTable">
+        <thead>
+          <tr>
+            <th>Interface</th>
+            <th class="num">RX/s</th>
+            <th class="num">TX/s</th>
+            <th class="num">RX pkt/s</th>
+            <th class="num">TX pkt/s</th>
+            <th class="num">RX total</th>
+            <th class="num">TX total</th>
+            <th class="num">Errors</th>
+          </tr>
+        </thead>
+        <tbody id="ifaceTableBody">
+          <tr class="empty-row"><td colspan="8">Waiting for first sample&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>Backend polled every 1s &middot; <span id="pollCount">0</span> samples received</span>
+  </footer>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
