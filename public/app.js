@@ -6,8 +6,8 @@
 
   const el = (id) => document.getElementById(id);
   const statusPill = el("statusPill");
-  const statusDot = el("statusDot");
   const statusText = el("statusText");
+  const hostLabel = el("hostLabel");
   const clockEl = el("clock");
   const rxValueEl = el("rxValue");
   const rxUnitEl = el("rxUnit");
@@ -22,17 +22,22 @@
   const unsupportedNote = el("unsupportedNote");
   const pollCountEl = el("pollCount");
   const canvas = el("scope");
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas ? canvas.getContext("2d") : null;
 
   // Rolling buffers for the waveform, in {t, rxRate, txRate} form.
   let history = [];
   let pollCount = 0;
   let cumulativeBytes = 0;
-  let lastTotals = null;
+  let initialTotalBytes = null;
+  let lastPollTime = 0;
+  let isPolling = false;
 
   // ---------------- Formatting helpers ----------------
 
   function splitBytes(value) {
+    if (!Number.isFinite(value) || value < 0) {
+      return { value: 0, unit: "B" };
+    }
     const units = ["B", "KB", "MB", "GB", "TB"];
     let v = value;
     let i = 0;
@@ -44,12 +49,14 @@
   }
 
   function setRate(valueEl, unitEl, bytesPerSec) {
+    if (!valueEl || !unitEl) return;
     const { value, unit } = splitBytes(bytesPerSec);
     valueEl.textContent = value.toFixed(value >= 100 ? 0 : 1);
     unitEl.textContent = unit + "/s";
   }
 
   function setTotal(valueEl, unitEl, bytes) {
+    if (!valueEl || !unitEl) return;
     const { value, unit } = splitBytes(bytes);
     valueEl.textContent = value.toFixed(value >= 100 ? 0 : 1);
     unitEl.textContent = unit;
@@ -68,6 +75,7 @@
   // ---------------- Status ----------------
 
   function setStatus(mode) {
+    if (!statusPill || !statusText) return;
     statusPill.classList.remove("live", "down");
     if (mode === "live") {
       statusPill.classList.add("live");
@@ -83,12 +91,15 @@
   }
 
   function tickClock() {
-    clockEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    if (clockEl) {
+      clockEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    }
   }
 
   // ---------------- Table ----------------
 
   function renderTable(interfaces) {
+    if (!ifaceTableBody || !ifaceCountEl) return;
     if (!interfaces || interfaces.length === 0) {
       ifaceTableBody.innerHTML =
         '<tr class="empty-row"><td colspan="8">No interface data available.</td></tr>';
@@ -98,16 +109,16 @@
     ifaceCountEl.textContent = `${interfaces.length} interface${interfaces.length === 1 ? "" : "s"}`;
     const rows = interfaces.map((it) => {
       const d = it.data;
-      const errTotal = d.rxErr + d.txErr;
+      const errTotal = (d.rxErr || 0) + (d.txErr || 0);
       const errClass = errTotal > 0 ? "num err-nonzero" : "num";
       return `<tr>
         <td class="iface-name"><span class="dot" aria-hidden="true"></span>${escapeHtml(it.name)}</td>
-        <td class="num">${fmtRateShort(d.rxRate)}</td>
-        <td class="num">${fmtRateShort(d.txRate)}</td>
-        <td class="num">${d.rxPktRate.toFixed(1)}</td>
-        <td class="num">${d.txPktRate.toFixed(1)}</td>
-        <td class="num">${fmtBytesShort(d.rxTotal)}</td>
-        <td class="num">${fmtBytesShort(d.txTotal)}</td>
+        <td class="num">${fmtRateShort(d.rxRate || 0)}</td>
+        <td class="num">${fmtRateShort(d.txRate || 0)}</td>
+        <td class="num">${Number(d.rxPktRate || 0).toFixed(1)}</td>
+        <td class="num">${Number(d.txPktRate || 0).toFixed(1)}</td>
+        <td class="num">${fmtBytesShort(d.rxTotal || 0)}</td>
+        <td class="num">${fmtBytesShort(d.txTotal || 0)}</td>
         <td class="${errClass}">${errTotal}</td>
       </tr>`;
     });
@@ -115,7 +126,8 @@
   }
 
   function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (c) => ({
+    if (!s) return "";
+    return String(s).replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
   }
@@ -123,24 +135,34 @@
   // ---------------- Oscilloscope waveform ----------------
 
   function resizeCanvas() {
+    if (!canvas || !ctx) return;
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    if (rect.width === 0 || rect.height === 0) return;
+
+    const targetW = Math.max(1, Math.floor(rect.width * dpr));
+    const targetH = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   function drawScope() {
+    if (!canvas || !ctx) return;
     const rect = canvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
+    if (w === 0 || h === 0) return;
+
     ctx.clearRect(0, 0, w, h);
 
     if (history.length < 2) return;
 
     const maxVal = Math.max(
       1024, // floor so the trace isn't jumpy near zero
-      ...history.map((p) => Math.max(p.rxRate, p.txRate))
+      ...history.map((p) => Math.max(p.rxRate || 0, p.txRate || 0))
     ) * 1.15;
 
     const stepX = w / (MAX_POINTS - 1);
@@ -150,7 +172,8 @@
       ctx.beginPath();
       history.forEach((p, i) => {
         const x = (startIdx + i) * stepX;
-        const y = h - (p[key] / maxVal) * (h - 12) - 6;
+        const val = Math.max(0, p[key] || 0);
+        const y = h - (val / maxVal) * (h - 12) - 6;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
@@ -182,31 +205,51 @@
       if (!res.ok) throw new Error("bad status " + res.status);
       const data = await res.json();
       pollCount++;
-      pollCountEl.textContent = String(pollCount);
+      if (pollCountEl) pollCountEl.textContent = String(pollCount);
+
+      if (data.os && hostLabel) {
+        hostLabel.textContent = `${data.os} live telemetry`;
+      }
 
       if (!data.supported) {
         setStatus("unsupported");
-        unsupportedNote.hidden = false;
+        if (unsupportedNote) unsupportedNote.hidden = false;
         renderTable([]);
         return;
       }
-      unsupportedNote.hidden = true;
+      if (unsupportedNote) unsupportedNote.hidden = true;
       setStatus("live");
 
-      const totals = data.totals;
-      setRate(rxValueEl, rxUnitEl, totals.rxRate);
-      setRate(txValueEl, txUnitEl, totals.txRate);
-      rxPktEl.textContent = totals.rxPktRate.toFixed(1);
-      txPktEl.textContent = totals.txPktRate.toFixed(1);
+      const totals = data.totals || {};
+      const rxRate = totals.rxRate || 0;
+      const txRate = totals.txRate || 0;
+      const rxTotal = totals.rxTotal || 0;
+      const txTotal = totals.txTotal || 0;
 
-      if (lastTotals) {
-        // Accumulate observed traffic since page load (rate * elapsed).
-        cumulativeBytes += (totals.rxRate + totals.txRate) * (POLL_MS / 1000);
+      setRate(rxValueEl, rxUnitEl, rxRate);
+      setRate(txValueEl, txUnitEl, txRate);
+      if (rxPktEl) rxPktEl.textContent = Number(totals.rxPktRate || 0).toFixed(1);
+      if (txPktEl) txPktEl.textContent = Number(totals.txPktRate || 0).toFixed(1);
+
+      // Session total calculation
+      const currentHwTotal = rxTotal + txTotal;
+      if (initialTotalBytes === null && currentHwTotal > 0) {
+        initialTotalBytes = currentHwTotal;
       }
-      lastTotals = totals;
-      setTotal(totalValueEl, totalUnitEl, cumulativeBytes);
 
-      history.push({ t: data.timestamp, rxRate: totals.rxRate, txRate: totals.txRate });
+      let sessionBytes = 0;
+      if (initialTotalBytes !== null && currentHwTotal >= initialTotalBytes) {
+        sessionBytes = currentHwTotal - initialTotalBytes;
+      } else {
+        const now = Date.now();
+        const elapsed = lastPollTime ? Math.max(0.1, (now - lastPollTime) / 1000) : 1;
+        cumulativeBytes += (rxRate + txRate) * elapsed;
+        sessionBytes = cumulativeBytes;
+      }
+      lastPollTime = Date.now();
+      setTotal(totalValueEl, totalUnitEl, sessionBytes);
+
+      history.push({ t: data.timestamp || Date.now(), rxRate, txRate });
       if (history.length > MAX_POINTS) history.shift();
       drawScope();
 
@@ -221,8 +264,12 @@
       const res = await fetch("/api/history?iface=_total", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
-      if (!data.supported) return;
-      history = data.samples.map((s) => ({ t: s.t, rxRate: s.rxRate, txRate: s.txRate }));
+      if (!data.supported || !Array.isArray(data.samples)) return;
+      history = data.samples.map((s) => ({
+        t: s.t,
+        rxRate: Number(s.rxRate) || 0,
+        txRate: Number(s.txRate) || 0
+      }));
       if (history.length > MAX_POINTS) history = history.slice(-MAX_POINTS);
       drawScope();
     } catch (err) {
@@ -232,18 +279,37 @@
 
   // ---------------- Init ----------------
 
+  async function pollLoop() {
+    if (!isPolling) {
+      isPolling = true;
+      try {
+        await pollStats();
+      } finally {
+        isPolling = false;
+      }
+    }
+    setTimeout(pollLoop, POLL_MS);
+  }
+
   function init() {
     resizeCanvas();
     window.addEventListener("resize", () => {
       resizeCanvas();
       drawScope();
     });
+
     tickClock();
     setInterval(tickClock, 1000);
     setStatus("connecting");
-    prefillHistory().then(pollStats);
-    setInterval(pollStats, POLL_MS);
+
+    prefillHistory().then(() => {
+      pollLoop();
+    });
   }
 
-  init();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();

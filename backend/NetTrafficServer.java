@@ -10,7 +10,6 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-
 public class NetTrafficServer {
 
     private static final String PROC_NET_DEV = "/proc/net/dev";
@@ -32,8 +31,12 @@ public class NetTrafficServer {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 8080;
         Path publicDir = Paths.get("public").toAbsolutePath().normalize();
 
+        if (!Files.isDirectory(publicDir) && Files.isDirectory(Paths.get("../public"))) {
+            publicDir = Paths.get("../public").toAbsolutePath().normalize();
+        }
+
         if (!Files.isDirectory(publicDir)) {
-            System.err.println("Could not find the 'public' directory at " + publicDir);
+            System.err.println("Warning: Could not find the 'public' directory at " + publicDir);
             System.err.println("Run this server from the project root (the folder that contains 'backend' and 'public').");
         }
 
@@ -124,7 +127,13 @@ public class NetTrafficServer {
             String[] parts = line.substring(colon + 1).trim().split("\\s+");
             if (parts.length < 16) continue;
             long[] values = new long[16];
-            for (int j = 0; j < 16; j++) values[j] = Long.parseLong(parts[j]);
+            for (int j = 0; j < 16; j++) {
+                try {
+                    values[j] = Long.parseUnsignedLong(parts[j]);
+                } catch (NumberFormatException e) {
+                    values[j] = 0;
+                }
+            }
             result.put(name, values);
         }
         return result;
@@ -132,8 +141,15 @@ public class NetTrafficServer {
 
     private static Map<String, long[]> readWindowsStats() {
         Map<String, long[]> result = new LinkedHashMap<>();
+        parseNetshSubinterfaces("ipv4", result);
+        parseNetshSubinterfaces("ipv6", result);
+        return result;
+    }
+
+    private static void parseNetshSubinterfaces(String ipVersion, Map<String, long[]> result) {
+        Process process = null;
         try {
-            Process process = new ProcessBuilder("netsh", "interface", "ipv4", "show", "subinterfaces").start();
+            process = new ProcessBuilder("netsh", "interface", ipVersion, "show", "subinterfaces").start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 boolean headerPassed = false;
@@ -149,29 +165,35 @@ public class NetTrafficServer {
                     String[] parts = line.split("\\s+", 5);
                     if (parts.length >= 5) {
                         try {
-                            long bytesIn = Long.parseLong(parts[2]);
-                            long bytesOut = Long.parseLong(parts[3]);
+                            long bytesIn = Long.parseUnsignedLong(parts[2]);
+                            long bytesOut = Long.parseUnsignedLong(parts[3]);
                             String name = parts[4].trim();
 
-                            long[] values = new long[16];
-                            values[RX_BYTES] = bytesIn;
-                            values[TX_BYTES] = bytesOut;
-                            values[RX_PACKETS] = bytesIn > 0 ? Math.max(1, bytesIn / 1200) : 0;
-                            values[TX_PACKETS] = bytesOut > 0 ? Math.max(1, bytesOut / 1200) : 0;
-                            result.put(name, values);
+                            long[] values = result.computeIfAbsent(name, k -> new long[16]);
+                            values[RX_BYTES] += bytesIn;
+                            values[TX_BYTES] += bytesOut;
+                            values[RX_PACKETS] += (bytesIn > 0 ? Math.max(1, bytesIn / 1200) : 0);
+                            values[TX_PACKETS] += (bytesOut > 0 ? Math.max(1, bytesOut / 1200) : 0);
                         } catch (NumberFormatException ignored) {}
                     }
                 }
             }
-            process.waitFor(400, TimeUnit.MILLISECONDS);
-        } catch (Exception ignored) {}
-        return result;
+            if (!process.waitFor(600, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
+        }
     }
 
     private static Map<String, long[]> readMacStats() {
         Map<String, long[]> result = new LinkedHashMap<>();
+        Process process = null;
         try {
-            Process process = new ProcessBuilder("netstat", "-b", "-i", "-n").start();
+            process = new ProcessBuilder("netstat", "-b", "-i", "-n").start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 boolean headerPassed = false;
@@ -188,27 +210,33 @@ public class NetTrafficServer {
                     if (parts.length >= 11 && parts[2].startsWith("<Link")) {
                         String name = parts[0];
                         try {
-                            long rxPkts = Long.parseLong(parts[4]);
-                            long rxErrs = Long.parseLong(parts[5]);
-                            long rxBytes = Long.parseLong(parts[6]);
-                            long txPkts = Long.parseLong(parts[7]);
-                            long txErrs = Long.parseLong(parts[8]);
-                            long txBytes = Long.parseLong(parts[9]);
+                            long rxPkts = Long.parseUnsignedLong(parts[4]);
+                            long rxErrs = Long.parseUnsignedLong(parts[5]);
+                            long rxBytes = Long.parseUnsignedLong(parts[6]);
+                            long txPkts = Long.parseUnsignedLong(parts[7]);
+                            long txErrs = Long.parseUnsignedLong(parts[8]);
+                            long txBytes = Long.parseUnsignedLong(parts[9]);
 
-                            long[] values = new long[16];
+                            long[] values = result.computeIfAbsent(name, k -> new long[16]);
                             values[RX_BYTES] = rxBytes;
                             values[RX_PACKETS] = rxPkts;
                             values[RX_ERRS] = rxErrs;
                             values[TX_BYTES] = txBytes;
                             values[TX_PACKETS] = txPkts;
                             values[TX_ERRS] = txErrs;
-                            result.put(name, values);
                         } catch (NumberFormatException ignored) {}
                     }
                 }
             }
-            process.waitFor(400, TimeUnit.MILLISECONDS);
-        } catch (Exception ignored) {}
+            if (!process.waitFor(600, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
+        }
         return result;
     }
 
@@ -269,10 +297,15 @@ public class NetTrafficServer {
 
                 double rxRate = 0, txRate = 0, rxPktRate = 0, txPktRate = 0;
                 if (st.lastRaw != null) {
-                    rxRate = Math.max(0, v[RX_BYTES] - st.lastRaw[RX_BYTES]) / elapsedSec;
-                    txRate = Math.max(0, v[TX_BYTES] - st.lastRaw[TX_BYTES]) / elapsedSec;
-                    rxPktRate = Math.max(0, v[RX_PACKETS] - st.lastRaw[RX_PACKETS]) / elapsedSec;
-                    txPktRate = Math.max(0, v[TX_PACKETS] - st.lastRaw[TX_PACKETS]) / elapsedSec;
+                    long rxDiff = v[RX_BYTES] - st.lastRaw[RX_BYTES];
+                    long txDiff = v[TX_BYTES] - st.lastRaw[TX_BYTES];
+                    long rxPktDiff = v[RX_PACKETS] - st.lastRaw[RX_PACKETS];
+                    long txPktDiff = v[TX_PACKETS] - st.lastRaw[TX_PACKETS];
+
+                    if (rxDiff >= 0) rxRate = rxDiff / elapsedSec;
+                    if (txDiff >= 0) txRate = txDiff / elapsedSec;
+                    if (rxPktDiff >= 0) rxPktRate = rxPktDiff / elapsedSec;
+                    if (txPktDiff >= 0) txPktRate = txPktDiff / elapsedSec;
                 }
                 st.lastRaw = v;
                 st.lastTime = now;
@@ -340,13 +373,15 @@ public class NetTrafficServer {
     private class StatsHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange ex) throws IOException {
-            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            String method = ex.getRequestMethod();
+            if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
                 sendJson(ex, 405, "{\"error\":\"method not allowed\"}");
                 return;
             }
             StringBuilder json = new StringBuilder();
             json.append("{");
             json.append("\"supported\":").append(model.isSupported()).append(",");
+            json.append("\"os\":\"").append(escape(System.getProperty("os.name"))).append("\",");
             json.append("\"timestamp\":").append(System.currentTimeMillis()).append(",");
 
             Sample t = model.totalLatest();
@@ -368,7 +403,8 @@ public class NetTrafficServer {
     private class HistoryHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange ex) throws IOException {
-            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            String method = ex.getRequestMethod();
+            if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
                 sendJson(ex, 405, "{\"error\":\"method not allowed\"}");
                 return;
             }
@@ -400,29 +436,50 @@ public class NetTrafficServer {
 
         @Override
         public void handle(HttpExchange ex) throws IOException {
-            String path = URI.create(ex.getRequestURI().toString()).getPath();
-            if (path.equals("/") || path.isEmpty()) path = "/index.html";
+            String method = ex.getRequestMethod();
+            if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
+                sendJson(ex, 405, "{\"error\":\"method not allowed\"}");
+                return;
+            }
+
+            String path = ex.getRequestURI().getPath();
+            if (path == null || path.equals("/") || path.isEmpty()) path = "/index.html";
+
             // Prevent path traversal outside the public directory.
-            Path resolved = root.resolve("." + path).normalize();
+            String relative = path.startsWith("/") ? path.substring(1) : path;
+            Path resolved = root.resolve(relative).normalize();
+
             if (!resolved.startsWith(root) || !Files.isRegularFile(resolved)) {
                 byte[] body = "404 not found".getBytes(StandardCharsets.UTF_8);
                 ex.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
-                ex.sendResponseHeaders(404, body.length);
-                try (OutputStream os = ex.getResponseBody()) { os.write(body); }
+                if ("HEAD".equalsIgnoreCase(method)) {
+                    ex.getResponseHeaders().set("Content-Length", String.valueOf(body.length));
+                    ex.sendResponseHeaders(404, -1);
+                } else {
+                    ex.sendResponseHeaders(404, body.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(body); }
+                }
                 return;
             }
+
             byte[] bytes = Files.readAllBytes(resolved);
             ex.getResponseHeaders().set("Content-Type", contentType(resolved.toString()));
-            ex.sendResponseHeaders(200, bytes.length);
-            try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+            if ("HEAD".equalsIgnoreCase(method)) {
+                ex.getResponseHeaders().set("Content-Length", String.valueOf(bytes.length));
+                ex.sendResponseHeaders(200, -1);
+            } else {
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+            }
         }
 
         private static String contentType(String name) {
-            if (name.endsWith(".html")) return "text/html; charset=utf-8";
-            if (name.endsWith(".css")) return "text/css; charset=utf-8";
-            if (name.endsWith(".js")) return "application/javascript; charset=utf-8";
-            if (name.endsWith(".json")) return "application/json; charset=utf-8";
-            if (name.endsWith(".svg")) return "image/svg+xml";
+            String lower = name.toLowerCase();
+            if (lower.endsWith(".html")) return "text/html; charset=utf-8";
+            if (lower.endsWith(".css")) return "text/css; charset=utf-8";
+            if (lower.endsWith(".js")) return "application/javascript; charset=utf-8";
+            if (lower.endsWith(".json")) return "application/json; charset=utf-8";
+            if (lower.endsWith(".svg")) return "image/svg+xml";
             return "application/octet-stream";
         }
     }
@@ -443,7 +500,28 @@ public class NetTrafficServer {
     }
 
     private static String escape(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < ' ') {
+                        sb.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
 
     private static Map<String, String> parseQuery(URI uri) {
@@ -472,7 +550,12 @@ public class NetTrafficServer {
         byte[] body = json.getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");
-        ex.sendResponseHeaders(status, body.length);
-        try (OutputStream os = ex.getResponseBody()) { os.write(body); }
+        if ("HEAD".equalsIgnoreCase(ex.getRequestMethod())) {
+            ex.getResponseHeaders().set("Content-Length", String.valueOf(body.length));
+            ex.sendResponseHeaders(status, -1);
+        } else {
+            ex.sendResponseHeaders(status, body.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(body); }
+        }
     }
 }
